@@ -1,6 +1,6 @@
 ARG NGINX_VER=1.25.5
 
-FROM nginx:${NGINX_VER}-alpine as base
+FROM nginx:${NGINX_VER}-alpine AS base
 
 ARG NGX_WAF_VERSION=current
 ARG CJSON_VERSION=v1.7.17
@@ -49,7 +49,9 @@ RUN apk add --no-cache --virtual dependencies \
     patch \
     rust \
     yajl-dev \
-    zlib-dev
+    zlib-dev \
+    coreutils \
+    wget
 
 # install ngx_waf
 RUN git clone --depth=1 https://github.com/ADD-SP/ngx_waf --branch ${NGX_WAF_VERSION} \
@@ -59,33 +61,32 @@ RUN git clone --depth=1 https://github.com/ADD-SP/ngx_waf --branch ${NGX_WAF_VER
 
 # install libsodium
 RUN git clone --depth=1 https://github.com/jedisct1/libsodium.git --branch ${LIB_SODIUM_VERSION} libsodium \
-    &&  cd libsodium \
-    &&  ./configure --prefix=/usr/local/libsodium --with-pic \
-    &&  make -j$(nproc) \
-    &&  make check -j$(nproc) \
-    &&  make install
+    && cd libsodium \
+    && ./configure --prefix=/usr/local/libsodium --with-pic \
+    && make -j"$(nproc)" \
+    && make check -j"$(nproc)" \
+    && make install
 
 # install ModSecurity
-RUN git clone --depth 1 https://github.com/SpiderLabs/ModSecurity.git --branch ${MODSEC_VERSION} && \
-    git -C /opt/ModSecurity submodule update --init --recursive && \
-    (cd "/opt/ModSecurity" && \
-    ./build.sh && \
-    ./configure --with-lmdb && \
-    make -j$(nproc) && \
-    make install \
-    ) && \
-    rm -fr /opt/ModSecurity \
+RUN git clone --depth 1 https://github.com/SpiderLabs/ModSecurity.git --branch ${MODSEC_VERSION} \
+    && git -C /opt/ModSecurity submodule update --init --recursive \
+    && (cd "/opt/ModSecurity" \
+    && ./build.sh \
+    && ./configure --with-lmdb \
+    && make -j"$(nproc)" \
+    && make install) \
+    && rm -fr /opt/ModSecurity \
     /usr/local/modsecurity/lib/libmodsecurity.a \
     /usr/local/modsecurity/lib/libmodsecurity.la
 
 # install modsec nginx connector, geoip, owasp rules, and nginx with geoip databases
-RUN git clone --depth 1 https://github.com/SpiderLabs/ModSecurity-nginx.git --branch ${MODSEC_NGINX_CONNECTOR_VERSION} && \
-    git clone --depth 1 https://github.com/leev/ngx_http_geoip2_module.git --branch ${NGINX_GEOIP2_MODULE_VERSION} && \
-    git clone --depth 1 https://github.com/coreruleset/coreruleset.git --branch ${OWASP_TAG} /usr/local/owasp-modsecurity-crs && \
-    wget -O - https://nginx.org/download/nginx-$NGINX_VERSION.tar.gz | tar -xz && \
-    mkdir -p /etc/nginx/geoip && \
-    wget -O - https://download.db-ip.com/free/dbip-city-lite-${GEO_DB_RELEASE}.mmdb.gz | gzip -d > /etc/nginx/geoip/dbip-city-lite.mmdb && \
-    wget -O - https://download.db-ip.com/free/dbip-country-lite-${GEO_DB_RELEASE}.mmdb.gz | gzip -d > /etc/nginx/geoip/dbip-country-lite.mmdb
+RUN git clone --depth 1 https://github.com/SpiderLabs/ModSecurity-nginx.git --branch ${MODSEC_NGINX_CONNECTOR_VERSION} \
+    && git clone --depth 1 https://github.com/leev/ngx_http_geoip2_module.git --branch ${NGINX_GEOIP2_MODULE_VERSION} \
+    && git clone --depth 1 https://github.com/coreruleset/coreruleset.git --branch ${OWASP_TAG} /usr/local/owasp-modsecurity-crs \
+    && wget -O - "https://nginx.org/download/nginx-${NGINX_VER}.tar.gz" | tar -xz \
+    && mkdir -p /etc/nginx/geoip \
+    && wget -O - "https://download.db-ip.com/free/dbip-city-lite-${GEO_DB_RELEASE}.mmdb.gz" | gzip -d > /etc/nginx/geoip/dbip-city-lite.mmdb \
+    && wget -O - "https://download.db-ip.com/free/dbip-country-lite-${GEO_DB_RELEASE}.mmdb.gz" | gzip -d > /etc/nginx/geoip/dbip-country-lite.mmdb
 
 # install brotli
 RUN git clone --depth=1 --recurse-submodules -j8 https://github.com/google/ngx_brotli --branch ${BROTLI_VERSION}
@@ -96,49 +97,48 @@ RUN git clone --depth=1 https://github.com/openresty/headers-more-nginx-module -
 ENV LIB_SODIUM=/usr/local/libsodium
 ENV LIB_MODSECURITY=/usr/local/modsecurity
 
-# install nginx modules
-RUN (cd "/opt/nginx-$NGINX_VERSION" && \
-    ./configure --with-compat \
+# build nginx dynamic modules
+RUN (cd "/opt/nginx-${NGINX_VER}" \
+    && ./configure --with-compat \
     --with-debug \
     --add-dynamic-module=../ngx_waf \
     --add-dynamic-module=../ModSecurity-nginx \
     --add-dynamic-module=../ngx_http_geoip2_module \
     --add-dynamic-module=../ngx_brotli \
     --add-dynamic-module=../headers-more-nginx-module \
-    --with-cc-opt='-fstack-protector-strong' && \
-    make modules \
-    ) && \
-    cp /opt/nginx-$NGINX_VERSION/objs/ngx_http_modsecurity_module.so \
-    /opt/nginx-$NGINX_VERSION/objs/ngx_http_geoip2_module.so \
-    /opt/nginx-$NGINX_VERSION/objs/ngx_http_waf_module.so \
-    /opt/nginx-$NGINX_VERSION/objs/ngx_http_brotli_filter_module.so \
-    /opt/nginx-$NGINX_VERSION/objs/ngx_http_brotli_static_module.so \
-    /opt/nginx-$NGINX_VERSION/objs/ngx_http_headers_more_filter_module.so \
-    /usr/lib/nginx/modules/ && \
-    rm -fr /opt/* && \
-    apk del dependencies
+    --with-cc-opt='-fstack-protector-strong' \
+    && make modules) \
+    && cp /opt/nginx-${NGINX_VER}/objs/ngx_http_modsecurity_module.so \
+          /opt/nginx-${NGINX_VER}/objs/ngx_http_geoip2_module.so \
+          /opt/nginx-${NGINX_VER}/objs/ngx_http_waf_module.so \
+          /opt/nginx-${NGINX_VER}/objs/ngx_http_brotli_filter_module.so \
+          /opt/nginx-${NGINX_VER}/objs/ngx_http_brotli_static_module.so \
+          /opt/nginx-${NGINX_VER}/objs/ngx_http_headers_more_filter_module.so \
+          /usr/lib/nginx/modules/ \
+    && rm -fr /opt/* \
+    && apk del dependencies
 
 # setup bad bot blocker
-RUN mkdir -p /etc/nginx/bots.d && \
-    wget -nv https://raw.githubusercontent.com/mitchellkrogza/nginx-ultimate-bad-bot-blocker/master/conf.d/globalblacklist.conf -O /etc/nginx/conf.d/globalblacklist.conf && \
-    wget -nv https://raw.githubusercontent.com/mitchellkrogza/nginx-ultimate-bad-bot-blocker/master/bots.d/blockbots.conf -O /etc/nginx/bots.d/blockbots.conf && \
-    wget -nv https://raw.githubusercontent.com/mitchellkrogza/nginx-ultimate-bad-bot-blocker/master/bots.d/ddos.conf -O /etc/nginx/bots.d/ddos.conf && \
-    wget -nv https://raw.githubusercontent.com/mitchellkrogza/nginx-ultimate-bad-bot-blocker/master/bots.d/whitelist-ips.conf -O /etc/nginx/bots.d/whitelist-ips.conf && \
-    wget -nv https://raw.githubusercontent.com/mitchellkrogza/nginx-ultimate-bad-bot-blocker/master/bots.d/whitelist-domains.conf -O /etc/nginx/bots.d/whitelist-domains.conf && \
-    wget -nv https://raw.githubusercontent.com/mitchellkrogza/nginx-ultimate-bad-bot-blocker/master/bots.d/blacklist-user-agents.conf -O /etc/nginx/bots.d/blacklist-user-agents.conf && \
-    wget -nv https://raw.githubusercontent.com/mitchellkrogza/nginx-ultimate-bad-bot-blocker/master/bots.d/custom-bad-referrers.conf -O /etc/nginx/bots.d/custom-bad-referrers.conf && \
-    wget -nv https://raw.githubusercontent.com/mitchellkrogza/nginx-ultimate-bad-bot-blocker/master/bots.d/blacklist-ips.conf -O /etc/nginx/bots.d/blacklist-ips.conf && \
-    wget -nv https://raw.githubusercontent.com/mitchellkrogza/nginx-ultimate-bad-bot-blocker/master/bots.d/bad-referrer-words.conf -O /etc/nginx/bots.d/bad-referrer-words.conf && \
-    wget -nv https://raw.githubusercontent.com/mitchellkrogza/nginx-ultimate-bad-bot-blocker/master/conf.d/botblocker-nginx-settings.conf -O /etc/nginx/conf.d/botblocker-nginx-settings.conf
+RUN mkdir -p /etc/nginx/bots.d \
+    && wget -nv https://raw.githubusercontent.com/mitchellkrogza/nginx-ultimate-bad-bot-blocker/master/conf.d/globalblacklist.conf -O /etc/nginx/conf.d/globalblacklist.conf \
+    && wget -nv https://raw.githubusercontent.com/mitchellkrogza/nginx-ultimate-bad-bot-blocker/master/bots.d/blockbots.conf -O /etc/nginx/bots.d/blockbots.conf \
+    && wget -nv https://raw.githubusercontent.com/mitchellkrogza/nginx-ultimate-bad-bot-blocker/master/bots.d/ddos.conf -O /etc/nginx/bots.d/ddos.conf \
+    && wget -nv https://raw.githubusercontent.com/mitchellkrogza/nginx-ultimate-bad-bot-blocker/master/bots.d/whitelist-ips.conf -O /etc/nginx/bots.d/whitelist-ips.conf \
+    && wget -nv https://raw.githubusercontent.com/mitchellkrogza/nginx-ultimate-bad-bot-blocker/master/bots.d/whitelist-domains.conf -O /etc/nginx/bots.d/whitelist-domains.conf \
+    && wget -nv https://raw.githubusercontent.com/mitchellkrogza/nginx-ultimate-bad-bot-blocker/master/bots.d/blacklist-user-agents.conf -O /etc/nginx/bots.d/blacklist-user-agents.conf \
+    && wget -nv https://raw.githubusercontent.com/mitchellkrogza/nginx-ultimate-bad-bot-blocker/master/bots.d/custom-bad-referrers.conf -O /etc/nginx/bots.d/custom-bad-referrers.conf \
+    && wget -nv https://raw.githubusercontent.com/mitchellkrogza/nginx-ultimate-bad-bot-blocker/master/bots.d/blacklist-ips.conf -O /etc/nginx/bots.d/blacklist-ips.conf \
+    && wget -nv https://raw.githubusercontent.com/mitchellkrogza/nginx-ultimate-bad-bot-blocker/master/bots.d/bad-referrer-words.conf -O /etc/nginx/bots.d/bad-referrer-words.conf \
+    && wget -nv https://raw.githubusercontent.com/mitchellkrogza/nginx-ultimate-bad-bot-blocker/master/conf.d/botblocker-nginx-settings.conf -O /etc/nginx/conf.d/botblocker-nginx-settings.conf
 
 # remove duplicated IPs from globalblacklist.conf
-RUN sed -i 's/^\t*138.199.57.151\t*1;$/#\t138.199.57.151\t\t1;/g' /etc/nginx/conf.d/globalblacklist.conf && \
-    sed -i 's/^\t*143.244.38.129\t*1;$/#\t143.244.38.129\t\t1;/g' /etc/nginx/conf.d/globalblacklist.conf && \
-    sed -i 's/^\t*195.181.163.194\t*1;$/#\t195.181.163.194\t\t1;/g' /etc/nginx/conf.d/globalblacklist.conf && \
-    sed -i 's/^\t*5.188.120.15\t*1;$/#\t5.188.120.15\t\t1;/g' /etc/nginx/conf.d/globalblacklist.conf && \
-    sed -i 's/^\t*89.187.173.66\t*1;$/#\t89.187.173.66\t\t1;/g' /etc/nginx/conf.d/globalblacklist.conf
+RUN sed -i 's/^\t*138.199.57.151\t*1;$/#\t138.199.57.151\t\t1;/g' /etc/nginx/conf.d/globalblacklist.conf \
+    && sed -i 's/^\t*143.244.38.129\t*1;$/#\t143.244.38.129\t\t1;/g' /etc/nginx/conf.d/globalblacklist.conf \
+    && sed -i 's/^\t*195.181.163.194\t*1;$/#\t195.181.163.194\t\t1;/g' /etc/nginx/conf.d/globalblacklist.conf \
+    && sed -i 's/^\t*5.188.120.15\t*1;$/#\t5.188.120.15\t\t1;/g' /etc/nginx/conf.d/globalblacklist.conf \
+    && sed -i 's/^\t*89.187.173.66\t*1;$/#\t89.187.173.66\t\t1;/g' /etc/nginx/conf.d/globalblacklist.conf
 
-FROM nginx:${NGINX_VER}-alpine as production
+FROM nginx:${NGINX_VER}-alpine AS production
 
 # copy nginx, waf assets, owasp-modsecurity-crs, and modsecurity from the build image
 COPY --from=base /etc/nginx/ /etc/nginx/
